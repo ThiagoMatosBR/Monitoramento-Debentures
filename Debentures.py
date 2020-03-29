@@ -1,34 +1,38 @@
 import os
+import sys
 import csv
 from datetime import datetime
 from requests_html import HTMLSession
 from requests import HTTPError
+import logging
 import ssl
 import smtplib
 from email.message import EmailMessage
 
 
 class Debenture_bot(object):
+
+    # Url da base de dados da ANBIMA com o preço das debentures do mercado secundário.
+    url = "https://www.anbima.com.br/informacoes/merc-sec-debentures/default.asp"
+
+    # Full path do arquivo de log.
+    event_log_name = "debenture.log"
+
     def __init__(self, my_debentures: list):
+
         self.my_debentures = set(my_debentures)
         self._mode = "a"
-        self.got_an_error = True
-        self.today = datetime.strftime(datetime.today(), "%d/%m/%Y")
-        self.event_log = {
-            "Main url request": "-",
-            "Data Available": "-",
-            "Query Data-Base": "-",
-            "Data Downloaded": "-",
-        }
+        self.logger = self.logging_settings(self.event_log_name)
 
     def _check_directory(self) -> int:
+        """Método para verificar a última data de modificação do arquivo csv salvo no diretório.
+        Arquivo csv controla e evolução do preço das debentures e é utilizado na plotagem semanal 
+        enviada por email pelo bot. """
+
         self._file_name = "My Debentures Data.csv"
 
-        # Diretório na qual se econtra o script e no qual serão salvos os arquivos:
-        base_path = os.path.dirname(__file__)
-
-        # Garantindo que mude para o diretório no qual está o script
-        os.chdir(base_path)
+        # Confirmando que estamos no diretório correto
+        os.chdir(os.path.dirname(__file__))
 
         try:
             # Última data de modificação em formato timestamp
@@ -36,37 +40,45 @@ class Debenture_bot(object):
         except Exception:
             last_mod = 0
 
-            # Se o arquivo não se econtrar no diretório, será criado no futuro e retorno 0
+            # Se o arquivo não se econtrar no diretório, será criado no futuro e retorno 0 como last_mod
             self._mode = "w"
 
         return last_mod
 
     def _check_for_updates(self) -> bool:
 
-        url = "https://www.anbima.com.br/informacoes/merc-sec-debentures/default.asp"
+        """Método requisita a base de dados da ANBIMA e verifica se há atualizações de preços nas debentues
+        e realiza atualizações no dict responsável pelo event-log.
+        
+        Fluxo: 
+        1) Enviar get request para base de dados da ANBIMA
+        2) Coletar na estrutura html do site a última data de atualização das debentures
+        3) Caso os dados da ANBIMA sejam inéditos, iremos nos conectar na url que contém
+        a tabela de debentures da nossa lista.
+        
+        Retorna True somente se os dados forem inéditos e disponíveis. """
 
-        # Abrindo uma conexão com a base de dados da ANBIMA
+        # Requisitando a base de dados da ANBIMA
         session = HTMLSession(mock_browser=True)
         try:
-            site = session.get(url, timeout=5)
+            site = session.get(self.url, timeout=10)
             if site.status_code == 200:
-                self.event_log["Main url request"] = "Succeded!"
+                self.logger.info("Sucesso na requisição da url")
             site.raise_for_status()
 
-        except HTTPError as error:
-
-            self.event_log["Main url request"] = f"Request Failed: {error}"
+        except HTTPError:
+            self.logger.exception("Erro na requisição: ")
             return False
 
         # Coletando as datas das últimas atualizações de debentures:
         dates = site.html.xpath('//form[@name="Mercado"]//input[@type="text"]')
 
         if not dates:
-            self.event_log["Data Available"] = "Not Available"
+            self.logger.warning("Não foi possível coletar a data de atualização.")
             return False
 
         else:
-            self.event_log["Data Available"] = "Yes"
+            self.logger.info("Data de atualização coletada.")
 
             # Aloca a data coletada em um dicionário para posterior uso
             self._date_acquired = dates[0].attrs["value"]
@@ -82,7 +94,7 @@ class Debenture_bot(object):
             if (datetime.timestamp(last_available_on_URL) + 86399) < last_modified:
 
                 # Se a data dos dados no site for anterior a últ. no diretório, é pq já temos os dados
-                self.event_log["Query Data-base"] = "Data-base updated already"
+                self.logger.warning("Sem atualização na base de dados da ANBIMA.")
                 return False
             else:
 
@@ -94,9 +106,11 @@ class Debenture_bot(object):
                     deb_data = session.get(url_to_inspect, timeout=5)
                     deb_data.raise_for_status()
 
-                except Exception as err_2:
+                except Exception:
 
-                    self.event_log["Main url request"] = f"2nd request failed: {err_2}"
+                    self.logger.exception(
+                        "Houve falha ao requisitar a url contendo a tabela com as debentures."
+                    )
                     return False
 
                 # Atualiza a tabela em html contendo os dados das debentures
@@ -107,13 +121,13 @@ class Debenture_bot(object):
     def get_my_data(self) -> None:
 
         """Analisa a tabela extraída do site da ANBIMA e extrai os dados relevantes referentes a lista
-        de debentures do usuário. Salva os dados em arquivo csv. Ao final da execução atualiza o event log """
+        de debentures do usuário. Salva os dados em arquivo csv."""
 
         # Primeiro verifica se há atualização no site da AMBIMA e se ainda não coletamos o dado:
         if self._check_for_updates():
 
             data_atual = self._date_acquired
-            self.event_log["Query Data-Base"] = f"Update with data from - {data_atual}"
+            self.logger.info(f"Atualizando a base de dados com dade de - {data_atual}")
 
             rows = self.raw_html_data.find("tr")
             with open(self._file_name, mode=self._mode, encoding="utf-8") as csv_file:
@@ -147,101 +161,121 @@ class Debenture_bot(object):
                         continue
                     else:
                         self.my_debentures.discard(cell)
+                        # Coleta todas as células referentes a debenture de interesse e armazena em cells
                         cells = row.find("td")
+
+                        # Filtrando somente as colunas que são de interesse e aproveita para converter
+                        # o separador de vírgula para ponto e adicionar uma coluna com a data da coleta
                         cells_to_record = [
                             j.text.replace(".", "").replace(",", ".")
                             for i, j in enumerate(cells)
                             if i in remaining_cols
                         ] + [str(data_atual)]
+
+                        # Ao final do processo, realizar o append / write dos dados no arquivo csv
                         csv_writer.writerow(cells_to_record)
 
+            # Se sobrou alguma debenture no set, é porque não estava disponível na tabela da ANBIMA
             if len(self.my_debentures) != 0:
-                self.event_log["Data Downloaded"] = f"Except {self.my_debentures}"
+                self.logger.info(
+                    f"Todos os dados baixados, exceto: {self.my_debentures}"
+                )
             else:
-                self.event_log["Data Downloaded"] = "All"
-
-                # Se chegamos até aqui é porque tudo deu certo e todos os dados foram coletados
-                self.got_an_error = False
-
-        else:
-            # Se por alguma razão retornar falso, a fonte do erro já terá sido capturada no event log
-            self._export_event_log()
-            return None
-
-        self._export_event_log()
-        return None
-
-    def _export_event_log(self) -> None:
-
-        """Salva o event-log em arquivo txt"""
-
-        event_log_name = "Event-log.txt"
-
-        # Caso o arquivo já exista, basta adicionar os dados no fim do arquivo
-        if os.path.isfile(os.path.join(os.path.dirname(__file__), event_log_name)):
-            mode = "a"
-        else:
-            mode = "w"
-
-        with open(event_log_name, mode, encoding="utf-8") as f:
-            f.write(f"Event Data: {self.today}\n")
-
-            for k, v in self.event_log.items():
-                f.write(f"{k}: {v}\n")
-            f.write("-" * 60 + "\n")
+                self.logger.info(f"Todos os dados baixados.")
 
         return None
 
-    def emailing_log_status(self):
+    def emailing_log_status(self, email_address, password) -> bool:
 
-        """Caso compila os resultados acumulados no dict de event log e adiciona-os ao conteúdo do email
-        Conecta-se ao servidor smtp do gmail e envia os dados para meu email pessoal.
-        Imprime a mensagem de email enviado com sucesso para permitir acompanhamento no crontab """
-
-        email_address = os.environ.get("JARVIS_USER")
-        email_pass = os.environ.get("JARVIS_PASS")
+        """Envia o event log por email caso tenha ocorrido algum erro/warning."""
 
         person = {"name": "Thiago", "email": "thiago.brunomatos@gmail.com"}
 
-        inner_text = ""
-        for k, v in self.event_log.items():
-            inner_text += f"{k}: {v}\n"
-
-        email_content = (
-            f"""Hi Mr. {person['name']}.\n\nPlease find bellow the event log refering to the debentures data captured in {self.today}:\n\n"""
-            + inner_text
-        )
+        hoje = datetime.strftime(datetime.today(), "%d/%m/%Y")
+        email_content = f"""Hi Mr. {person['name']}.
+        \n\nPlease find attatched the event log refering to the debentures data captured in {hoje}:\n\n Best Regards, Jarvis"""
 
         # Determinando o payload da mensagem:
         msg = EmailMessage()
         msg["From"] = email_address
         msg["To"] = person["email"]
-        msg["Subject"] = f"Event Log Debentures Bot - Date {self.today}"
+        msg["Subject"] = f"Event Log Debentures Bot - Date: {hoje}"
         msg.set_content(email_content)
 
         context = ssl.create_default_context()
 
+        try:
+            with open(self.event_log_name, "rb") as f:
+                file_data = f.read()
+
+        except Exception:
+            self.logger.exception("Erro ao abrir o arquivo de log: ")
+            return False
+
+        # Adicionando o anexo
+        msg.add_attachment(
+            file_data,
+            maintype="application",
+            subtype="octet-stream",
+            filename=self.event_log_name,
+        )
+
         # Estabelecendo a conexão com o servidor do gmail:
-        with smtplib.SMTP_SSL("smtp.gmail.com", port=465, context=context) as server:
+        try:
+            with smtplib.SMTP_SSL(
+                "smtp.gmail.com", port=465, context=context
+            ) as server:
 
-            try:
-                server.login(email_address, email_pass)
+                server.login(email_address, password)
                 server.send_message(msg)
-            except Exception as error:
-                print(f"Ocorreu o seguinte erro: {error}")
 
-        print("Email enviado com sucesso!")
+        except Exception:
+            self.logger.exception("Ocorreu o seguinte erro na conexão com o servidor: ")
+            return False
 
-        return None
+        else:
+            self.logger.info("Email enviado com sucesso.")
+            os.remove(self.event_log_name)
+
+        return True
+
+    @staticmethod
+    def logging_settings(event_log_name) -> object:
+        """Configura o display e salvamento dos logs"""
+        logger = logging.getLogger(__name__)
+
+        formatter = logging.Formatter(
+            "%(name)s -  %(asctime)s - %(levelname)s -  %(message)s",
+            datefmt="%d/%m/%y %H:%M:%S",
+        )
+
+        # stream log para ser direcionado para output do crontab
+        console_handler = logging.StreamHandler(stream=sys.stdout)
+        console_handler.setFormatter(formatter)
+        logger.setLevel(logging.INFO)
+        logger.addHandler(console_handler)
+
+        # log em file, caso acionado
+        file_handler = logging.FileHandler(
+            filename=os.path.abspath(event_log_name), encoding="utf-8", delay=True
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.WARNING)
+        logger.addHandler(file_handler)
+
+        return logger
 
 
 # Miscelânea de Funções:
 def _get_url_of_interest(current_date: str) -> str:
-    """Objetivo: converter a data e concaternar com a string que vai alimentar a url
-    onde se encontram os dados das debentures """
+    """Objetivo: converter a data aquisitada no site da ANBIMA e concaternar com a string
+    que vai alimentar a url na qual encontram os dados das debentures. """
+
     url_base = (
         "https://www.anbima.com.br/informacoes/merc-sec-debentures/resultados/mdeb_"
     )
+
+    # Esse fragmento de texto que irá compor a url pode mudar, caso as debentures sejam indexadas ao DI
     extra_text = "_ipca_spread.asp"
 
     months = [
