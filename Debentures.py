@@ -18,6 +18,9 @@ class Debenture_bot(object):
     # Full path do arquivo de log.
     event_log_name = "debenture.log"
 
+    # Arquivo csv que conterá os dados das debentures
+    _file_name = "My Debentures Data.csv"
+
     def __init__(self, my_debentures: list):
 
         self.my_debentures = set(my_debentures)
@@ -29,9 +32,7 @@ class Debenture_bot(object):
         Arquivo csv controla e evolução do preço das debentures e é utilizado na plotagem semanal 
         enviada por email pelo bot. """
 
-        self._file_name = "My Debentures Data.csv"
-
-        # Confirmando que estamos no diretório correto
+        # Garantindo que estamos no diretório correto
         os.chdir(os.path.dirname(__file__))
 
         try:
@@ -70,7 +71,7 @@ class Debenture_bot(object):
             self.logger.exception("Erro na requisição: ")
             return False
 
-        # Coletando as datas das últimas atualizações de debentures:
+        # Coletando a data da última atualização das tabela com debentures:
         dates = site.html.xpath('//form[@name="Mercado"]//input[@type="text"]')
 
         if not dates:
@@ -83,11 +84,11 @@ class Debenture_bot(object):
             # Aloca a data coletada em um dicionário para posterior uso
             self._date_acquired = dates[0].attrs["value"]
 
-            # Verifica se eventualmente o arquivo já não está no diretório
-            last_modified = self._check_directory()
-
             # Converte a data adquirida na AMBIMA para datetime
             last_available_on_URL = datetime.strptime(self._date_acquired, "%d/%m/%Y")
+
+            # Verifica a última atualização realizada na base de dados csv no diretório
+            last_modified = self._check_directory()
 
             # Converte data da ANBIMA para timestamp e leva para as 23:59h, pois a ref.
             # dos dados da ANBIMA é as 00:00:00h
