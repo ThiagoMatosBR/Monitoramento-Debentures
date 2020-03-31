@@ -21,6 +21,9 @@ class Debenture_bot(object):
     # Arquivo csv que conterá os dados das debentures
     _file_name = "My Debentures Data.csv"
 
+    # Garantindo que iremos salvar o log e csv no local correto
+    os.chdir(os.path.dirname(__file__))
+
     def __init__(self, my_debentures: list):
 
         self.my_debentures = set(my_debentures)
@@ -31,9 +34,6 @@ class Debenture_bot(object):
         """Método para verificar a última data de modificação do arquivo csv salvo no diretório.
         Arquivo csv controla e evolução do preço das debentures e é utilizado na plotagem semanal 
         enviada por email pelo bot. """
-
-        # Garantindo que estamos no diretório correto
-        os.chdir(os.path.dirname(__file__))
 
         try:
             # Última data de modificação em formato timestamp
@@ -235,7 +235,7 @@ class Debenture_bot(object):
             return False
 
         else:
-            self.logger.info("Email enviado com sucesso.")
+            self.logger.info("Email com logs enviado com sucesso.")
             os.remove(self.event_log_name)
 
         return True
@@ -258,7 +258,7 @@ class Debenture_bot(object):
 
         # log em file, caso acionado
         file_handler = logging.FileHandler(
-            filename=os.path.abspath(event_log_name), encoding="utf-8", delay=True
+            filename=event_log_name, encoding="utf-8", delay=True
         )
         file_handler.setFormatter(formatter)
         file_handler.setLevel(logging.WARNING)
